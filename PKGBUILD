@@ -2,12 +2,12 @@
 # Contributer: Sven-Hendrik Haase <svenstaro@gmail.com>
 # Contributer: Konstantin Gizdov <arch@kge.pw>
 
-pkgname=(cuda11.4 cuda11.4-tools)
-pkgbase=cuda11.4
-pkgver=11.4.4
-_driverver=470.82.01
+pkgname=(cuda11.8 cuda11.8-tools)
+pkgbase=cuda11.8
+pkgver=11.8.0
+_driverver=520.61.05
 pkgrel=1
-pkgdesc="NVIDIA's GPU programming toolkit (version 11.4)"
+pkgdesc="NVIDIA's GPU programming toolkit (version 11.8)"
 arch=('x86_64')
 url="https://developer.nvidia.com/cuda-zone"
 license=('custom:NVIDIA')
@@ -139,7 +139,7 @@ build() {
   done
 }
 
-package_cuda11.4() {
+package_cuda11.8() {
 #  replaces=('cuda-toolkit' 'cuda-sdk' 'cuda-static')
   conflicts=('cuda')
   provides=('cuda' 'cuda-toolkit' 'cuda-sdk' 'libcudart.so' 'libcublas.so' 'libcusolver.so' 'libcusparse.so')
@@ -154,11 +154,11 @@ package_cuda11.4() {
   rm -r "${pkgdir}"/opt/cuda/{bin/nvvp,bin/computeprof,libnvvp,nsight*,samples}
 }
 
-package_cuda11.4-tools() {
-  pkgdesc="NVIDIA's GPU programming toolkit (extra tools: nvvp, nsight, samples) (version 11.4)"
+package_cuda11.8-tools() {
+  pkgdesc="NVIDIA's GPU programming toolkit (extra tools: nvvp, nsight, samples) (version 11.8)"
   conflicts=('cuda-tools')
   provides=('cuda-tools')
-  depends=('cuda11.4' 'java-runtime=8' 'nss')
+  depends=('cuda11.8' 'java-runtime=8' 'nss')
   optdepends=('glu: required for some CUDA samples'
               'freeglut: required for some CUDA samples'
               'perl: required by some NVVP plugins')
