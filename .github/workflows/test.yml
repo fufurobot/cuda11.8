@@ -49,3 +49,31 @@ jobs:
             exit 1
           fi
           echo ".SRCINFO agrees with PKGBUILD"
+
+  upstream:
+    name: Check the NVIDIA installer is still published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the source URL resolves
+        run: |
+          # A dead or moved installer is the most common way this PKGBUILD
+          # silently rots, and it cannot be caught by parsing files locally.
+          # Only a HEAD request is issued, so the 4.3 GB payload is not
+          # downloaded; this keeps the job cheap enough to run on every push.
+          pkgver=$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)
+          driverver=$(grep -m1 '^_driverver=' PKGBUILD | cut -d= -f2)
+          file="cuda_${pkgver}_${driverver}_linux.run"
+          url="https://developer.download.nvidia.com/compute/cuda/${pkgver}/local_installers/${file}"
+
+          echo "checking ${url}"
+          code=$(curl -sIL -o /dev/null -w '%{http_code}' --max-time 60 "$url")
+          if [ "$code" != "200" ]; then
+            echo "::error::${file} is not downloadable (HTTP ${code})"
+            exit 1
+          fi
+
+          size=$(curl -sIL --max-time 60 "$url" \
+                 | awk 'BEGIN{IGNORECASE=1} /^content-length:/{v=$2} END{gsub(/\r/,"",v); print v}')
+          echo "::notice::${file} is available (${size} bytes)"
