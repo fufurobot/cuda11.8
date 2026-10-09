@@ -38,3 +38,7 @@ reports/
 .DS_Store
 .idea/
 .vscode/
+
+# uv cache / playwright browsers staged inside the workspace
+.uv-cache/
+.pw-browsers/
