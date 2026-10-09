@@ -139,3 +139,56 @@ def test_required_metadata_fields_are_present(field: str) -> None:
     """makepkg rejects a PKGBUILD missing these fields."""
     assignments = pkgbuild_assignments()
     assert field in assignments, f"PKGBUILD is missing {field}"
+
+
+def test_prepare_guards_the_samples_glob() -> None:
+    """Regression: the findgllib glob must not run unguarded.
+
+    CUDA 11.8 no longer bundles the samples, so
+    ``builds/cuda_samples/*/*/findgllib.mk`` matches nothing. Without
+    nullglob the literal pattern reaches `patch`, which then tries to create a
+    file called "*" and fails prepare() outright.
+    """
+    text = PKGBUILD
+    start = text.find("prepare() {")
+    assert start != -1
+    # Isolate prepare() only; build() legitimately does not need nullglob.
+    end = text.find("\nbuild()", start)
+    prepare_body = text[start:end]
+
+    assert "nullglob" in prepare_body, (
+        "prepare() must enable nullglob before globbing for findgllib.mk"
+    )
+    assert "_findgllib" in prepare_body, (
+        "the glob result must be captured, not expanded inline in the for loop"
+    )
+    # The original bug: an inline unguarded glob in the for statement.
+    assert "for f in builds/cuda_samples/*/*/findgllib.mk" not in prepare_body
+
+
+def test_build_tolerates_a_missing_samples_tree() -> None:
+    """build() must not assume cuda_samples exists (absent in CUDA 11.8)."""
+    text = PKGBUILD
+    start = text.find("build() {")
+    end = text.find("\npackage_cuda11.8()", start)
+    build_body = text[start:end]
+
+    assert '[[ -d cuda_samples ]]' in build_body, (
+        "build() must guard the cuda_samples move; CUDA 11.8 omits it"
+    )
+    # Hard-coded removal of a possibly-missing path aborts the build.
+    assert "samples/bin/cuda-uninstaller" not in build_body or "rm -rf" in build_body
+
+
+def test_tools_package_guards_optional_sample_paths() -> None:
+    """cuda11.8-tools must not fail when the samples are absent."""
+    text = PKGBUILD
+    start = text.find("package_cuda11.8-tools()")
+    assert start != -1
+    body = text[start:]
+
+    assert '[[ -d "${_prepdir}/opt/cuda/samples" ]]' in body, (
+        "the tools package must guard the samples move"
+    )
+    # A brace-expansion mv that includes a missing path fails outright.
+    assert 'mv "${_prepdir}"/opt/cuda/{libnvvp,samples}' not in body

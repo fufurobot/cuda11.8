@@ -82,10 +82,21 @@ sha512sums=('e96e1389abed34b5093b3a1d4e6ae9f3d4f8406621b1475f378efae65868657efce
 prepare() {
   sh cuda_${pkgver}_${_driverver}_linux.run --target "${srcdir}" --noexec
 
-  # Fix up samples tht use findgllib_mk
-  for f in builds/cuda_samples/*/*/findgllib.mk; do
-    patch $f cuda-findgllib_mk.diff
-  done
+  # Fix up samples that use findgllib.mk.
+  #
+  # CUDA 11.8 no longer bundles the samples (they moved to a separate GitHub
+  # repository), so the glob below usually matches nothing. Guard it with
+  # nullglob: without that, the unmatched pattern is passed to patch verbatim
+  # and patch tries to create a file literally named "*".
+  shopt -s nullglob
+  local _findgllib=(builds/cuda_samples/*/*/findgllib.mk)
+  shopt -u nullglob
+
+  if (( ${#_findgllib[@]} )); then
+    for f in "${_findgllib[@]}"; do
+      patch "$f" cuda-findgllib_mk.diff
+    done
+  fi
 }
 
 build() {
@@ -93,9 +104,15 @@ build() {
 
   cd "${srcdir}/builds"
 
-  rm -r NVIDIA*.run bin
+  rm -rf NVIDIA*.run bin
   mkdir -p "${_prepdir}/opt/cuda/extras"
-  mv cuda_samples "${_prepdir}/opt/cuda/samples"
+
+  # CUDA 11.8 no longer ships the samples in the installer, so only move the
+  # directory when the installer actually provided one.
+  if [[ -d cuda_samples ]]; then
+    mv cuda_samples "${_prepdir}/opt/cuda/samples"
+  fi
+
   mv integration nsight_compute nsight_systems EULA.txt "${_prepdir}/opt/cuda"
   mv cuda_sanitizer_api/compute-sanitizer "${_prepdir}/opt/cuda/extras/compute-sanitizer"
   rmdir cuda_sanitizer_api
@@ -106,8 +123,12 @@ build() {
     cp -r $lib/* "${_prepdir}/opt/cuda/"
   done
 
-  # Delete some unnecessary files
-  rm -r "${_prepdir}"/opt/cuda/{bin/cuda-uninstaller,samples/bin/cuda-uninstaller}
+  # Delete some unnecessary files. Only the paths that exist are removed, since
+  # the sample tree is absent in 11.8 and the uninstaller moved into
+  # cuda_demo_suite.
+  rm -rf "${_prepdir}"/opt/cuda/bin/cuda-uninstaller \
+         "${_prepdir}"/opt/cuda/samples/bin/cuda-uninstaller \
+         "${_prepdir}"/opt/cuda/extras/demo_suite/cuda-uninstaller
 
   # Define compilers for CUDA to use.
   # This allows us to use older versions of GCC if we have to.
@@ -151,7 +172,13 @@ package_cuda11.8() {
   cd "${_prepdir}"
   cp -al * "${pkgdir}"
 
-  rm -r "${pkgdir}"/opt/cuda/{bin/nvvp,bin/computeprof,libnvvp,nsight*,samples}
+  # The tools (nvvp, nsight, samples) belong to cuda11.8-tools. Some of these
+  # paths do not exist in CUDA 11.8, so only remove what is present.
+  rm -rf "${pkgdir}"/opt/cuda/bin/nvvp \
+         "${pkgdir}"/opt/cuda/bin/computeprof \
+         "${pkgdir}"/opt/cuda/libnvvp \
+         "${pkgdir}"/opt/cuda/nsight* \
+         "${pkgdir}"/opt/cuda/samples
 }
 
 package_cuda11.8-tools() {
@@ -169,7 +196,13 @@ package_cuda11.8-tools() {
   mv "${_prepdir}"/opt/cuda/nsight* "${pkgdir}/opt/cuda"
   mv "${_prepdir}"/opt/cuda/bin/nvvp "${pkgdir}/opt/cuda/bin/nvvp"
   mv "${_prepdir}"/opt/cuda/bin/computeprof "${pkgdir}/opt/cuda/bin/computeprof"
-  mv "${_prepdir}"/opt/cuda/{libnvvp,samples} "${pkgdir}/opt/cuda"
+  mv "${_prepdir}"/opt/cuda/libnvvp "${pkgdir}/opt/cuda"
+
+  # CUDA 11.8 does not bundle the samples, so only split them out when the
+  # installer provided them.
+  if [[ -d "${_prepdir}/opt/cuda/samples" ]]; then
+    mv "${_prepdir}"/opt/cuda/samples "${pkgdir}/opt/cuda"
+  fi
 
   # licenses
   mkdir -p "${pkgdir}/usr/share/licenses"
