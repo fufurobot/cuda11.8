@@ -42,3 +42,4 @@ reports/
 # uv cache / playwright browsers staged inside the workspace
 .uv-cache/
 .pw-browsers/
+uv.lock
