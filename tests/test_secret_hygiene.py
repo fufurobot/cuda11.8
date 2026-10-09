@@ -19,9 +19,14 @@ SECRET_FILES = (".env",)
 
 
 def _git_check_ignore(repo: Path, path: str) -> bool:
-    """True when git would ignore ``path`` inside ``repo``."""
+    """True when git would ignore ``path`` inside ``repo``.
+
+    ``--no-index`` is required: without it git only reports a path as ignored
+    when it actually exists in the working tree, so the check would pass
+    locally and fail in a fresh CI clone.
+    """
     result = subprocess.run(
-        ["git", "-C", str(repo), "check-ignore", "--quiet", path],
+        ["git", "-C", str(repo), "check-ignore", "--no-index", "--quiet", path],
         capture_output=True,
     )
     # 0 == ignored, 1 == not ignored, other == error.
