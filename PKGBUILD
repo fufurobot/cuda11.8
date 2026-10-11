@@ -9,6 +9,9 @@ _driverver=520.61.05
 pkgrel=1
 pkgdesc="NVIDIA's GPU programming toolkit (version 11.8)"
 arch=('x86_64')
+# Install side by side with any other CUDA, matching the cuda-11.1 convention.
+# Using /opt/cuda would clobber (or be clobbered by) the distro cuda package.
+_cudaroot=/opt/cuda-11.8
 url="https://developer.nvidia.com/cuda-zone"
 license=('custom:NVIDIA')
 depends=('gcc10-libs' 'gcc10' 'opencl-nvidia' 'nvidia-utils' 'python')
@@ -105,35 +108,35 @@ build() {
   cd "${srcdir}/builds"
 
   rm -rf NVIDIA*.run bin
-  mkdir -p "${_prepdir}/opt/cuda/extras"
+  mkdir -p "${_prepdir}${_cudaroot}/extras"
 
   # CUDA 11.8 no longer ships the samples in the installer, so only move the
   # directory when the installer actually provided one.
   if [[ -d cuda_samples ]]; then
-    mv cuda_samples "${_prepdir}/opt/cuda/samples"
+    mv cuda_samples "${_prepdir}${_cudaroot}/samples"
   fi
 
-  mv integration nsight_compute nsight_systems EULA.txt "${_prepdir}/opt/cuda"
-  mv cuda_sanitizer_api/compute-sanitizer "${_prepdir}/opt/cuda/extras/compute-sanitizer"
+  mv integration nsight_compute nsight_systems EULA.txt "${_prepdir}${_cudaroot}"
+  mv cuda_sanitizer_api/compute-sanitizer "${_prepdir}${_cudaroot}/extras/compute-sanitizer"
   rmdir cuda_sanitizer_api
   for lib in *; do
     if [[ "$lib" =~ .*"version.json".* ]]; then
       continue
     fi
-    cp -r $lib/* "${_prepdir}/opt/cuda/"
+    cp -r $lib/* "${_prepdir}${_cudaroot}/"
   done
 
   # Delete some unnecessary files. Only the paths that exist are removed, since
   # the sample tree is absent in 11.8 and the uninstaller moved into
   # cuda_demo_suite.
-  rm -rf "${_prepdir}"/opt/cuda/bin/cuda-uninstaller \
-         "${_prepdir}"/opt/cuda/samples/bin/cuda-uninstaller \
-         "${_prepdir}"/opt/cuda/extras/demo_suite/cuda-uninstaller
+  rm -rf "${_prepdir}${_cudaroot}"/bin/cuda-uninstaller \
+         "${_prepdir}${_cudaroot}"/samples/bin/cuda-uninstaller \
+         "${_prepdir}${_cudaroot}"/extras/demo_suite/cuda-uninstaller
 
   # Define compilers for CUDA to use.
   # This allows us to use older versions of GCC if we have to.
-  ln -s /usr/bin/gcc-10 "${_prepdir}/opt/cuda/bin/gcc"
-  ln -s /usr/bin/g++-10 "${_prepdir}/opt/cuda/bin/g++"
+  ln -s /usr/bin/gcc-10 "${_prepdir}${_cudaroot}/bin/gcc"
+  ln -s /usr/bin/g++-10 "${_prepdir}${_cudaroot}/bin/g++"
 
   # Install profile and ld.so.config files
   install -Dm755 "${srcdir}/cuda.sh" "${_prepdir}/etc/profile.d/cuda.sh"
@@ -144,26 +147,30 @@ build() {
   cp "${srcdir}"/*.pc "${_prepdir}"/usr/lib/pkgconfig
 
   mkdir -p "${_prepdir}/usr/share/licenses/${pkgname}"
-  ln -s /opt/cuda/EULA.txt "${_prepdir}/usr/share/licenses/${pkgname}/EULA.txt"
-  ln -s /opt/cuda/README "${_prepdir}/usr/share/licenses/${pkgname}/README"
+  ln -s "${_cudaroot}/EULA.txt" "${_prepdir}/usr/share/licenses/${pkgname}/EULA.txt"
+  ln -s "${_cudaroot}/README" "${_prepdir}/usr/share/licenses/${pkgname}/README"
 
   # Allow newer compilers to work. This is not officially supported in the Arch package but
   # if users want to try, let them try.
   # See https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#system-requirements
   # for official requirements
-  sed -i "/.*unsupported GNU version.*/d" "${_prepdir}"/opt/cuda/targets/x86_64-linux/include/crt/host_config.h
-  sed -i "/.*unsupported clang version.*/d" "${_prepdir}"/opt/cuda/targets/x86_64-linux/include/crt/host_config.h
+  sed -i "/.*unsupported GNU version.*/d" "${_prepdir}${_cudaroot}"/targets/x86_64-linux/include/crt/host_config.h
+  sed -i "/.*unsupported clang version.*/d" "${_prepdir}${_cudaroot}"/targets/x86_64-linux/include/crt/host_config.h
 
   # Fix Makefile paths to CUDA
-  for f in $(find "$_prepdir"/opt/cuda -name Makefile); do
-    sed -i "s|/usr/local/cuda|/opt/cuda|g" "$f"
+  for f in $(find "${_prepdir}${_cudaroot}" -name Makefile); do
+    sed -i "s|/usr/local/cuda|${_cudaroot}|g" "$f"
   done
 }
 
 package_cuda11.8() {
 #  replaces=('cuda-toolkit' 'cuda-sdk' 'cuda-static')
-  conflicts=('cuda')
-  provides=('cuda' 'cuda-toolkit' 'cuda-sdk' 'libcudart.so' 'libcublas.so' 'libcusolver.so' 'libcusparse.so')
+  # This toolkit installs to /opt/cuda-11.8 so it can coexist with the distro
+  # `cuda` package and any other CUDA version. It therefore must NOT claim
+  # provides=('cuda') nor conflict with it: doing both would make pacman refuse
+  # to install a package that is explicitly designed to sit alongside it.
+  # No conflicts: an empty array would emit a malformed "conflicts = " line.
+  provides=('cuda11.8-toolkit')
   optdepends=('gdb: for cuda-gdb'
               'glu: required for some profiling tools in CUPTI')
 
@@ -174,17 +181,18 @@ package_cuda11.8() {
 
   # The tools (nvvp, nsight, samples) belong to cuda11.8-tools. Some of these
   # paths do not exist in CUDA 11.8, so only remove what is present.
-  rm -rf "${pkgdir}"/opt/cuda/bin/nvvp \
-         "${pkgdir}"/opt/cuda/bin/computeprof \
-         "${pkgdir}"/opt/cuda/libnvvp \
-         "${pkgdir}"/opt/cuda/nsight* \
-         "${pkgdir}"/opt/cuda/samples
+  rm -rf "${pkgdir}${_cudaroot}"/bin/nvvp \
+         "${pkgdir}${_cudaroot}"/bin/computeprof \
+         "${pkgdir}${_cudaroot}"/libnvvp \
+         "${pkgdir}${_cudaroot}"/nsight* \
+         "${pkgdir}${_cudaroot}"/samples
 }
 
 package_cuda11.8-tools() {
   pkgdesc="NVIDIA's GPU programming toolkit (extra tools: nvvp, nsight, samples) (version 11.8)"
-  conflicts=('cuda-tools')
-  provides=('cuda-tools')
+  # Same reasoning as cuda11.8: these live under the versioned prefix and do
+  # not replace the distro cuda-tools package.
+  provides=('cuda11.8-tools')
   depends=('cuda11.8' 'java-runtime=8' 'nss')
   optdepends=('glu: required for some CUDA samples'
               'freeglut: required for some CUDA samples'
@@ -192,16 +200,16 @@ package_cuda11.8-tools() {
 
   local _prepdir="${srcdir}/prep"
 
-  mkdir -p "${pkgdir}/opt/cuda/bin"
-  mv "${_prepdir}"/opt/cuda/nsight* "${pkgdir}/opt/cuda"
-  mv "${_prepdir}"/opt/cuda/bin/nvvp "${pkgdir}/opt/cuda/bin/nvvp"
-  mv "${_prepdir}"/opt/cuda/bin/computeprof "${pkgdir}/opt/cuda/bin/computeprof"
-  mv "${_prepdir}"/opt/cuda/libnvvp "${pkgdir}/opt/cuda"
+  mkdir -p "${pkgdir}${_cudaroot}/bin"
+  mv "${_prepdir}${_cudaroot}"/nsight* "${pkgdir}${_cudaroot}"
+  mv "${_prepdir}${_cudaroot}"/bin/nvvp "${pkgdir}${_cudaroot}/bin/nvvp"
+  mv "${_prepdir}${_cudaroot}"/bin/computeprof "${pkgdir}${_cudaroot}/bin/computeprof"
+  mv "${_prepdir}${_cudaroot}"/libnvvp "${pkgdir}${_cudaroot}"
 
   # CUDA 11.8 does not bundle the samples, so only split them out when the
   # installer provided them.
-  if [[ -d "${_prepdir}/opt/cuda/samples" ]]; then
-    mv "${_prepdir}"/opt/cuda/samples "${pkgdir}/opt/cuda"
+  if [[ -d "${_prepdir}${_cudaroot}/samples" ]]; then
+    mv "${_prepdir}${_cudaroot}"/samples "${pkgdir}${_cudaroot}"
   fi
 
   # licenses

@@ -98,14 +98,29 @@ def test_every_source_has_a_checksum_or_is_skipped() -> None:
     )
 
 
-def test_packaged_toolchain_targets_cuda_11_8() -> None:
-    """The .pc files must describe the toolkit this package actually ships."""
+def test_packaged_toolchain_targets_a_versioned_prefix() -> None:
+    """The toolkit installs side by side under /opt/cuda-11.8.
+
+    Installing to /opt/cuda would collide with the distro cuda package, which
+    owns that path. The cuda-11.1 reference package uses the same versioned
+    convention.
+    """
     for pc in ("cuda.pc", "cudart.pc"):
         text = (REPO_ROOT / pc).read_text(encoding="utf-8")
-        assert "/opt/cuda" in text, f"{pc} must reference the /opt/cuda prefix"
-        assert "cudaroot=/opt/cuda\n" in text + "\n", (
-            f"{pc} cudaroot should point at /opt/cuda"
+        assert "cudaroot=/opt/cuda-11.8\n" in text + "\n", (
+            f"{pc} cudaroot should point at /opt/cuda-11.8"
         )
+        # Guard against a regression to the unversioned, colliding path.
+        assert "cudaroot=/opt/cuda\n" not in text + "\n", (
+            f"{pc} must not use the shared /opt/cuda prefix"
+        )
+
+
+def test_pkgbuild_declares_a_single_cudaroot() -> None:
+    """The install prefix must be defined once, not repeated inline."""
+    assert "_cudaroot=/opt/cuda-11.8" in PKGBUILD, (
+        "the PKGBUILD must declare _cudaroot, so the prefix cannot drift"
+    )
 
 
 def test_cuda_pc_reports_major_version_11() -> None:
@@ -130,8 +145,26 @@ def test_install_hook_refreshes_the_loader_cache() -> None:
 def test_profile_script_exports_cuda_path() -> None:
     """Without CUDA_PATH/PATH the toolkit is not discoverable after install."""
     text = (REPO_ROOT / "cuda.sh").read_text(encoding="utf-8")
-    assert "CUDA_PATH=/opt/cuda" in text
-    assert "/opt/cuda/bin" in text
+    assert "CUDA_PATH=/opt/cuda-11.8" in text
+    assert "/opt/cuda-11.8/bin" in text
+
+
+def test_ld_conf_points_at_the_correct_prefix() -> None:
+    """A stale ld.so.conf path means the libraries are never found."""
+    text = (REPO_ROOT / "cuda.conf").read_text(encoding="utf-8")
+    assert text.startswith("/opt/cuda-11.8/lib64\n"), (
+        "cuda.conf must list the versioned prefix first"
+    )
+    assert "\n/opt/cuda/lib64" not in "\n" + text, (
+        "cuda.conf must not reference the shared /opt/cuda prefix"
+    )
+
+
+def test_install_hook_messages_match_the_prefix() -> None:
+    """Misleading post_install output sends users to the wrong directory."""
+    text = (REPO_ROOT / "cuda.install").read_text(encoding="utf-8")
+    assert "/opt/cuda-11.8/bin" in text
+    assert "/opt/cuda/bin" not in text
 
 
 @pytest.mark.parametrize("field", ["depends", "options", "license", "arch"])
@@ -187,8 +220,53 @@ def test_tools_package_guards_optional_sample_paths() -> None:
     assert start != -1
     body = text[start:]
 
-    assert '[[ -d "${_prepdir}/opt/cuda/samples" ]]' in body, (
+    assert '[[ -d "${_prepdir}${_cudaroot}/samples" ]]' in body, (
         "the tools package must guard the samples move"
     )
     # A brace-expansion mv that includes a missing path fails outright.
     assert 'mv "${_prepdir}"/opt/cuda/{libnvvp,samples}' not in body
+
+
+def test_pkgbuild_declares_side_by_side_provides() -> None:
+    """provides/conflicts must not claim to replace the distro cuda package.
+
+    The toolkit installs to a versioned prefix precisely so it can coexist with
+    the distro `cuda` package. Claiming `provides=('cuda')` while also
+    conflicting with it would make pacman refuse to install a package that is
+    explicitly designed to sit alongside.
+    """
+    # Strip comments first: the PKGBUILD explains this decision in a comment
+    # that itself mentions provides=('cuda').
+    code = "\n".join(
+        line for line in PKGBUILD.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "provides=('cuda'" not in code, (
+        "cuda11.8 installs to a versioned prefix and must not claim provides=('cuda')"
+    )
+    assert "conflicts=('cuda'" not in code, (
+        "cuda11.8 must not conflict with the distro cuda package"
+    )
+    # The versioned provides are the correct declaration.
+    assert "provides=('cuda11.8-toolkit')" in code
+
+
+def test_gitlab_ci_builds_the_package_with_makepkg(ci: dict | None = None) -> None:
+    """The pipeline must actually run makepkg, not just lint the PKGBUILD."""
+    import yaml
+
+    class _L(yaml.SafeLoader):
+        pass
+
+    _L.add_constructor("!reference", lambda l, n: l.construct_sequence(n))
+    data = yaml.load(
+        (REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"), Loader=_L
+    )
+    text = "\n".join(
+        str(step)
+        for job, cfg in data.items()
+        if isinstance(cfg, dict)
+        for key in ("before_script", "script")
+        for step in (cfg.get(key) or [])
+    )
+    assert "makepkg" in text, "the pipeline never invokes makepkg"
+    assert "--noconfirm" in text, "makepkg would block on a prompt in CI"
