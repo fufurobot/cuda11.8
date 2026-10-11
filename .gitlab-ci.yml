@@ -1,0 +1,147 @@
+# GitLab CI for the cuda11.8 AUR package.
+#
+# Builds the package inside an Arch Linux container so the build matches the
+# target distribution (glibc, gcc-10, pacman) rather than approximating it.
+#
+# Two jobs:
+#   * metadata  - fast, always runs; validates the PKGBUILD/.SRCINFO and the
+#                 secret-hygiene contract using the repo's own test suite.
+#   * build     - actually runs makepkg. Heavy (the NVIDIA installer is ~4.3 GB
+#                 and the package is ~2.2 GB), so it is manual by default and
+#                 limited to the default branch and tags.
+
+stages:
+  - test
+  - build
+
+default:
+  # Official Arch Linux image. Pinning to a date tag keeps builds reproducible;
+  # update deliberately rather than tracking :latest.
+  image: archlinux:base-devel
+
+variables:
+  # Keep pacman and makepkg output parseable, and never prompt.
+  PACMAN_ARGS: "--noconfirm --needed --noprogressbar"
+  # The NVIDIA installer is downloaded into the build tree; keep it on the
+  # workspace volume so the cache can retain it between runs.
+  MAKEPKG_DIR: "$CI_PROJECT_DIR/.makepkg"
+
+# ---------------------------------------------------------------------------
+# Fast validation: no CUDA download, runs on every push.
+# ---------------------------------------------------------------------------
+metadata:
+  stage: test
+  before_script:
+    - pacman -Syu $PACMAN_ARGS python uv git >/dev/null
+  script:
+    - echo "== validating PKGBUILD and .SRCINFO =="
+    - uv run --with pytest --with requests --with pyyaml pytest tests/ -v
+    - |
+      echo "== checking .SRCINFO agrees with the PKGBUILD =="
+      pkgver=$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)
+      if ! grep -q "^	pkgver = ${pkgver}$" .SRCINFO; then
+        echo "ERROR: .SRCINFO pkgver does not match PKGBUILD (${pkgver})"
+        exit 1
+      fi
+      echo ".SRCINFO agrees with PKGBUILD (${pkgver})"
+    - |
+      echo "== checking no secrets were committed =="
+      if git ls-files | grep -qx '.env'; then
+        echo "ERROR: .env is tracked; a credential has been published"
+        exit 1
+      fi
+      if git grep -nE 'github_pat_[A-Za-z0-9_]{20,}' -- . ':!*.example' ':!tests/*'; then
+        echo "ERROR: a GitHub token was found in the working tree"
+        exit 1
+      fi
+      echo "no committed secrets detected"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# Real package build with makepkg inside Arch Linux.
+# ---------------------------------------------------------------------------
+build-package:
+  stage: build
+  # The installer is ~4.3 GB and the finished package ~2.2 GB, so the build
+  # needs far more than a default runner's disk. Ensure the runner can supply
+  # at least ~20 GB free.
+  timeout: 6h
+  before_script:
+    # An Arch container runs as root, and makepkg refuses to run as root
+    # (it would otherwise record root-owned files in the package). Create an
+    # unprivileged builder and give it the workspace.
+    - pacman -Syu $PACMAN_ARGS base-devel git sudo >/dev/null
+    - |
+      if ! id -u builder >/dev/null 2>&1; then
+        useradd -m -s /bin/bash builder
+      fi
+    # Quote the whole command: the unquoted colon in "NOPASSWD: ALL" would be
+    # parsed as a YAML mapping and corrupt the job definition.
+    - "echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder"
+    - chmod 0440 /etc/sudoers.d/builder
+    - chown -R builder:builder "$CI_PROJECT_DIR"
+  script:
+    - |
+      sudo -u builder -H bash -euo pipefail -c '
+        cd "$CI_PROJECT_DIR"
+
+        # Keep the multi-GB sources and the finished package on the project
+        # directory so they survive into artifacts and the cache.
+        export BUILDDIR="$MAKEPKG_DIR/build"
+        export SRCDEST="$MAKEPKG_DIR/src"
+        export PKGDEST="$MAKEPKG_DIR/pkg"
+        mkdir -p "$BUILDDIR" "$SRCDEST" "$PKGDEST"
+
+        echo "== makepkg: building cuda11.8 =="
+        # Sources are verified against the sha512 in the PKGBUILD. That is the
+        # point of building here, so do not pass --skipinteg.
+        makepkg --noconfirm --cleanbuild --force
+
+        echo "== built artifacts =="
+        ls -la "$PKGDEST"
+      '
+    - |
+      echo "== verifying the built package =="
+      shopt -s nullglob
+      pkgs=("$MAKEPKG_DIR"/pkg/*.pkg.tar.zst)
+      if (( ${#pkgs[@]} == 0 )); then
+        echo "ERROR: no package was produced"
+        exit 1
+      fi
+      # Read the install prefix from the PKGBUILD so this check cannot drift
+      # out of sync with _cudaroot.
+      cudaroot=$(grep -m1 '^_cudaroot=' PKGBUILD | cut -d= -f2)
+      echo "install prefix: ${cudaroot}"
+      for pkg in "${pkgs[@]}"; do
+        echo "checking $(basename "$pkg")"
+        # A truncated archive is the classic CI failure; prove it is readable.
+        bsdtar -tf "$pkg" >/dev/null
+        echo "  archive OK ($(bsdtar -tf "$pkg" | wc -l) entries)"
+        # The payload must actually contain a working compiler.
+        if ! bsdtar -tf "$pkg" | grep -qx ".${cudaroot}/bin/nvcc"; then
+          echo "ERROR: $(basename "$pkg") does not contain ${cudaroot}/bin/nvcc"
+          exit 1
+        fi
+        echo "  contains ${cudaroot}/bin/nvcc"
+      done
+  artifacts:
+    name: "cuda11.8-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - .makepkg/pkg/*.pkg.tar.zst
+    expire_in: 1 week
+  cache:
+    key: cuda11.8-sources
+    paths:
+      # Avoid re-downloading the 4.3 GB installer on every run. makepkg
+      # re-verifies it against the PKGBUILD checksum, so a cache hit is safe.
+      - .makepkg/src/
+  rules:
+    # Manual on branches: a multi-hour, multi-GB job should not fire on every
+    # push. It still runs automatically for tags.
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: false
