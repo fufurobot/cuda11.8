@@ -184,3 +184,43 @@ def test_release_workflow_frees_disk_before_building() -> None:
         text = path.read_text(encoding="utf-8")
         assert "df -h" in text, f"{path.name} never checks available space"
         assert "rm -rf" in text, f"{path.name} never frees disk space"
+
+
+def test_container_mounts_use_a_host_absolute_path() -> None:
+    """A docker -v source must be absolute or the mount silently does nothing.
+
+    Using $PWD produced "cd: /work: No such file or directory" inside the
+    container, because Docker created an empty /work instead of bind-mounting
+    the workspace. $GITHUB_WORKSPACE is guaranteed absolute.
+    """
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        if "docker run" not in text:
+            continue
+        assert "-v \"$PWD:" not in text, (
+            f"{path.name} bind-mounts $PWD; use $GITHUB_WORKSPACE, which is "
+            "guaranteed to be an absolute host path"
+        )
+        assert "GITHUB_WORKSPACE" in text, (
+            f"{path.name} should bind-mount $GITHUB_WORKSPACE"
+        )
+
+
+def test_sudo_is_not_relied_on_for_the_environment() -> None:
+    """sudo resets the environment, so 'set -u' aborts on an inherited var.
+
+    The build failed with "MAKEPKG_DIR: unbound variable" for exactly this
+    reason. Paths must be passed explicitly or defined inside the sudo shell.
+    """
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "sudo -u" in line and "bash -" in line:
+                assert line.rstrip().endswith("\\") or line.rstrip().endswith("'"), (
+                    f"{path.name}: sudo invocation should pass variables "
+                    f"explicitly: {line.strip()}"
+                )

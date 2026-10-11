@@ -78,12 +78,17 @@ jobs:
           # Run the whole build inside archlinux so glibc, gcc-10 and pacman
           # match the target distribution exactly.
           #
-          # The project directory is bind-mounted so the finished package lands
-          # on the host, where the release steps can see it. makepkg refuses to
-          # run as root, so an unprivileged builder user is created inside.
-          mkdir -p "$PWD/.makepkg/pkg" "$PWD/.makepkg/build" "$PWD/.makepkg/src"
+          # $GITHUB_WORKSPACE is used rather than $PWD: the mount needs a
+          # host-absolute path, and an empty or relative value makes Docker
+          # silently create an empty /work instead of bind-mounting, which then
+          # fails with "cd: /work: No such file or directory".
+          work="$GITHUB_WORKSPACE"
+          echo "workspace: ${work}"
+          test -d "$work" || { echo "::error::workspace ${work} does not exist"; exit 1; }
+
+          mkdir -p "$work/.makepkg/pkg" "$work/.makepkg/build" "$work/.makepkg/src"
           docker run --rm \
-            -v "$PWD:/work" \
+            -v "${work}:/work" \
             -w /work \
             -e MAKEPKG_DIR=/work/.makepkg \
             archlinux:base-devel \
