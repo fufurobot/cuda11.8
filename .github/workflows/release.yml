@@ -106,15 +106,25 @@ jobs:
             archlinux:base-devel \
             bash /scripts/build-in-container.sh
 
+      - name: Install verification tooling
+        run: |
+          # bsdtar reads .pkg.tar.zst. It is not present on the base image.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools
+
       - name: Verify the built package
         id: verify
         run: |
           shopt -s nullglob
-          pkgs=(.makepkg/pkg/*.pkg.tar.zst)
-          if (( ${#pkgs[@]} == 0 )); then
-            echo "::error::no package was produced"
+          # The PKGBUILD is a split package: cuda11.8 plus cuda11.8-tools.
+          # Both are published, but only the main package is checked for nvcc.
+          main=(.makepkg/pkg/cuda11.8-*.pkg.tar.zst)
+          if (( ${#main[@]} == 0 )); then
+            echo "::error::no main package was produced"
+            ls -la .makepkg/pkg || true
             exit 1
           fi
+          pkgs=(.makepkg/pkg/*.pkg.tar.zst)
 
           cudaroot=$(grep -m1 '^_cudaroot=' PKGBUILD | cut -d= -f2)
           for pkg in "${pkgs[@]}"; do
@@ -136,46 +146,49 @@ jobs:
             "/tmp/nvcc-check${cudaroot}/bin/nvcc" --version | grep -i release || true
           done
 
-          echo "package=${pkgs[0]}" >> "$GITHUB_OUTPUT"
+          echo "package=${main[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Split into sub-2GiB parts
         run: |
-          pkg="${{ steps.verify.outputs.package }}"
-          base=$(basename "$pkg")
-          size=$(stat -c%s "$pkg")
+          # The PKGBUILD is a split package, so there are two artifacts and they
+          # are sized independently: cuda11.8 exceeds the 2 GiB asset limit and
+          # must be split, while cuda11.8-tools fits comfortably in one asset.
+          shopt -s nullglob
           limit=$((2 * 1024 * 1024 * 1024 - 1024 * 1024))   # 2 GiB less 1 MiB
-
-          echo "package: ${base} (${size} bytes)"
           echo "asset limit: ${limit} bytes"
 
           mkdir -p release-assets
-          if (( size < limit )); then
-            echo "fits in one asset; publishing as-is"
-            cp "$pkg" "release-assets/${base}"
-          else
-            parts=$(( (size + limit - 1) / limit ))
-            echo "splitting into ${parts} parts"
-            split -b "$limit" -d --suffix-length=2 "$pkg" "release-assets/${base}.part-"
-          fi
+          for pkg in .makepkg/pkg/*.pkg.tar.zst; do
+            base=$(basename "$pkg")
+            size=$(stat -c%s "$pkg")
+            echo "== ${base} (${size} bytes) =="
+            if (( size < limit )); then
+              echo "  fits in one asset; publishing as-is"
+              cp "$pkg" "release-assets/${base}"
+            else
+              parts=$(( (size + limit - 1) / limit ))
+              echo "  exceeds the limit; splitting into ${parts} parts"
+              split -b "$limit" -d --suffix-length=2 "$pkg" "release-assets/${base}.part-"
+            fi
+          done
 
-          # Checksums let a downloader verify the reassembled file. Computed on
-          # the whole package, which is what the user ends up with after cat.
-          # Checksums must cover BOTH the files actually published and the
-          # name the user ends up with after reassembling, otherwise the
-          # documented `sha256sum -c SHA256SUMS.txt` fails on the joined file.
+          # Checksums must cover BOTH the files actually published and the name
+          # the user ends up with after reassembling, otherwise the documented
+          # `sha256sum -c SHA256SUMS.txt` fails on the joined file.
           (
             cd release-assets
             : > SHA256SUMS.txt
-            if ls ./*.part-* >/dev/null 2>&1; then
+            for pkg in "$GITHUB_WORKSPACE"/.makepkg/pkg/*.pkg.tar.zst; do
+              base=$(basename "$pkg")
               # Whole-package digest, recorded under the reassembled name.
               # Rewrite only the filename field; a greedy sed would eat the
               # digest too, since the digest contains no slash either.
-              digest=$(sha256sum "$GITHUB_WORKSPACE/$pkg" | cut -d" " -f1)
+              digest=$(sha256sum "$pkg" | cut -d" " -f1)
               printf "%s  %s\n" "$digest" "$base" >> SHA256SUMS.txt
-              # Per-part digests, so a bad download is caught before joining.
+            done
+            # Per-part digests, so a bad download is caught before joining.
+            if ls ./*.part-* >/dev/null 2>&1; then
               sha256sum ./*.part-* >> SHA256SUMS.txt
-            else
-              sha256sum "$base" >> SHA256SUMS.txt
             fi
             cat SHA256SUMS.txt
           )
@@ -223,6 +236,8 @@ jobs:
           this repository on an Arch Linux container.
 
           * \`pkgver\`: $(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)-$(grep -m1 '^pkgrel=' PKGBUILD | cut -d= -f2)
+          * two packages: \`cuda11.8\` (compiler and libraries) and
+            \`cuda11.8-tools\` (nsight, nvvp; optional)
           * \`nvcc\`: 11.8.89
           * installs to \`/opt/cuda-11.8\` so it coexists with any other CUDA
           * verified to contain a working \`nvcc\` and a readable archive
