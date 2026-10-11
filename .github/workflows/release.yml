@@ -73,12 +73,13 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "publishing: ${tag}"
 
-      - name: Cache the GCC 10 host compiler
-        uses: actions/cache@v4
+      - name: Restore the GCC 10 host compiler
+        id: gcc10-cache
+        uses: actions/cache/restore@v4
         with:
           # The nvcc smoke test needs an old host compiler. GCC 16 fails against
-          # CUDA 11.8, and gcc10 is AUR-only, so it is built once and cached
-          # here rather than costing ~40 minutes on every release.
+          # CUDA 11.8, and gcc10 is AUR-only and compiles from source in about
+          # two hours, so it is cached.
           path: .makepkg/gcc10
           key: gcc10-10.5.0-2-${{ runner.os }}
 
@@ -112,6 +113,15 @@ jobs:
           # Take ownership back before doing anything else.
           sudo chown -R "$(id -u):$(id -g)" "${work}"
           ls -la "${work}/.makepkg/pkg"
+
+      - name: Save the GCC 10 host compiler
+        # 'always()' matters: a failed build must not discard a two-hour GCC
+        # compile, which is what happened on earlier runs.
+        if: always() && steps.gcc10-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .makepkg/gcc10
+          key: gcc10-10.5.0-2-${{ runner.os }}
 
       - name: Install verification tooling
         run: |
