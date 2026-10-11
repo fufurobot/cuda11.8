@@ -62,6 +62,13 @@ else
     curl -fsSL 'https://aur.archlinux.org/cgit/aur.git/snapshot/gcc10.tar.gz' -o gcc10.tar.gz
     tar xzf gcc10.tar.gz
     cd gcc10
+    # Not optional: the PKGBUILD verifies PGP signatures on the GCC release
+    # tarball with validpgpkeys, and a fresh container has none of them, so
+    # makepkg aborts with "One or more PGP signatures could not be verified!".
+    gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys \
+      F3691687D867B81B51CE07D9BBE43771487328A9 \
+      86CFFCA918CF3AF47147588051E8B148A9999C34 \
+      13975A70E63C361C73AE69EF6EEB81F8981C74C7
     makepkg --noconfirm --nodeps
   "
   # Install into an isolated prefix rather than the container root; only the
