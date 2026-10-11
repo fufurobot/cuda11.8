@@ -22,9 +22,45 @@ default:
 variables:
   # Keep pacman and makepkg output parseable, and never prompt.
   PACMAN_ARGS: "--noconfirm --needed --noprogressbar"
+  # makepkg refuses to run as root; the bootstrap creates this user.
+  MAKEPKG_USER: "builder"
   # The NVIDIA installer is downloaded into the build tree; keep it on the
   # workspace volume so the cache can retain it between runs.
   MAKEPKG_DIR: "$CI_PROJECT_DIR/.makepkg"
+
+# Shared, idempotent bootstrap for the Arch container.
+#
+# Three things routinely break an Arch container build:
+#   * the keyring is not populated, so signature verification fails and pacman
+#     refuses to install anything
+#   * the sync database is stale, so a package name is "not found"
+#   * makepkg refuses to run as root, and the image runs as root
+.arch_bootstrap:
+  before_script:
+    - |
+      # Populate the keyring only if it is missing; the official images ship it
+      # ready and regenerating it is slow.
+      if [ ! -s /etc/pacman.d/gnupg/trustdb.gpg ]; then
+        echo "== initialising the pacman keyring =="
+        pacman-key --init
+        pacman-key --populate archlinux
+      fi
+    - pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring >/dev/null
+    - pacman -S --noconfirm --needed --noprogressbar python uv git >/dev/null
+
+# Bootstrap plus an unprivileged builder, for jobs that run makepkg.
+.arch_builder:
+  before_script:
+    - !reference [.arch_bootstrap, before_script]
+    - pacman -S --noconfirm --needed --noprogressbar base-devel sudo >/dev/null
+    - |
+      if ! id -u builder >/dev/null 2>&1; then
+        useradd -m -s /bin/bash builder
+      fi
+      # Quote the whole command: an unquoted colon in "NOPASSWD: ALL" would be
+      # parsed as a YAML mapping and corrupt the job definition.
+      echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+      chmod 0440 /etc/sudoers.d/builder
 
 # ---------------------------------------------------------------------------
 # Fast validation: no CUDA download, runs on every push.
@@ -32,7 +68,7 @@ variables:
 metadata:
   stage: test
   before_script:
-    - pacman -Syu $PACMAN_ARGS python uv git >/dev/null
+    - !reference [.arch_bootstrap, before_script]
   script:
     - echo "== validating PKGBUILD and .SRCINFO =="
     - uv run --with pytest --with requests --with pyyaml pytest tests/ -v
@@ -70,18 +106,7 @@ build-package:
   # at least ~20 GB free.
   timeout: 6h
   before_script:
-    # An Arch container runs as root, and makepkg refuses to run as root
-    # (it would otherwise record root-owned files in the package). Create an
-    # unprivileged builder and give it the workspace.
-    - pacman -Syu $PACMAN_ARGS base-devel git sudo >/dev/null
-    - |
-      if ! id -u builder >/dev/null 2>&1; then
-        useradd -m -s /bin/bash builder
-      fi
-    # Quote the whole command: the unquoted colon in "NOPASSWD: ALL" would be
-    # parsed as a YAML mapping and corrupt the job definition.
-    - "echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder"
-    - chmod 0440 /etc/sudoers.d/builder
+    - !reference [.arch_builder, before_script]
     - chown -R builder:builder "$CI_PROJECT_DIR"
   script:
     - |
