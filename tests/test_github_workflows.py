@@ -224,3 +224,27 @@ def test_sudo_is_not_relied_on_for_the_environment() -> None:
                     f"{path.name}: sudo invocation should pass variables "
                     f"explicitly: {line.strip()}"
                 )
+
+
+def test_checksums_cover_the_reassembled_package() -> None:
+    """Checksumming only the parts breaks the documented verify step.
+
+    The release notes tell users to `cat` the parts and then run
+    `sha256sum -c SHA256SUMS.txt`. If the file lists only the part files, that
+    check fails on the joined package, so the digest for the reassembled name
+    must be included too.
+    """
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        assert 'printf "%s  %s\\n" "$digest" "$base"' in text, (
+            f"{path.name} does not record a digest under the reassembled "
+            "filename; `sha256sum -c` would fail after reassembly"
+        )
+        # A greedy sed over `sha256sum` output eats the digest along with the
+        # path, producing a malformed line.
+        assert "sha256sum" not in text or "sed \"s|.*/|" not in text, (
+            f"{path.name} rewrites the checksum filename with a greedy sed, "
+            "which strips the digest"
+        )
