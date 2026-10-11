@@ -43,3 +43,11 @@ reports/
 .uv-cache/
 .pw-browsers/
 uv.lock
+
+# makepkg stages PKGBUILD sources in the project directory. The CUDA installer
+# is ~4.3 GB and any split parts are ~2 GB each; committing either blows past
+# GitHub's 2 GiB pack limit and the push is rejected outright.
+cuda_*_linux.run
+cuda_*_linux.run.part*
+*.pkg.tar.zst.part-*
+release-assets/
