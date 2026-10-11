@@ -75,13 +75,15 @@ jobs:
 
       - name: Build the package in an Arch Linux container
         run: |
-          # Run the whole build inside archlinux so glibc, gcc-10 and pacman
-          # match the target distribution exactly.
+          # Run the whole build inside archlinux so glibc, gcc-10 and pacman match
+          # the target distribution exactly.
           #
-          # $GITHUB_WORKSPACE is used rather than $PWD: the mount needs a
-          # host-absolute path, and an empty or relative value makes Docker
-          # silently create an empty /work instead of bind-mounting, which then
-          # fails with "cd: /work: No such file or directory".
+          # $GITHUB_WORKSPACE rather than $PWD: the mount needs a host-absolute
+          # path, and an empty or relative value makes Docker silently create an
+          # empty /work instead of bind-mounting.
+          #
+          # The container script lives in .github/scripts/ because it needs
+          # nested quoting, and nested single quotes terminate the outer block.
           work="$GITHUB_WORKSPACE"
           echo "workspace: ${work}"
           test -d "$work" || { echo "::error::workspace ${work} does not exist"; exit 1; }
@@ -91,35 +93,9 @@ jobs:
             -v "${work}:/work" \
             -w /work \
             -e MAKEPKG_DIR=/work/.makepkg \
+            -v "${work}/.github/scripts:/scripts:ro" \
             archlinux:base-devel \
-            bash -euo pipefail -c '
-              echo "== refreshing the keyring =="
-              pacman-key --init >/dev/null 2>&1 || true
-              pacman-key --populate archlinux >/dev/null 2>&1 || true
-              pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring >/dev/null
-              pacman -S --noconfirm --needed --noprogressbar base-devel sudo git >/dev/null
-
-              useradd -m -s /bin/bash builder
-              echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-              chmod 0440 /etc/sudoers.d/builder
-              chown -R builder:builder /work
-
-              # sudo resets the environment, so MAKEPKG_DIR from the outer shell
-              # is not visible here. Pass the paths explicitly instead of
-              # relying on inheritance, which fails under 'set -u'.
-              sudo -u builder -H \
-                MAKEPKG_DIR="$MAKEPKG_DIR" \
-                bash -euo pipefail -c '
-                  cd /work
-                  export BUILDDIR="$MAKEPKG_DIR/build"
-                  export SRCDEST="$MAKEPKG_DIR/src"
-                  export PKGDEST="$MAKEPKG_DIR/pkg"
-                  echo "== makepkg =="
-                  makepkg --noconfirm --force
-                  echo "== produced =="
-                  ls -la "$PKGDEST"
-                '
-            '
+            bash /scripts/build-in-container.sh
 
       - name: Verify the built package
         id: verify
