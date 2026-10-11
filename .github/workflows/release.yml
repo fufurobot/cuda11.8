@@ -106,6 +106,13 @@ jobs:
             archlinux:base-devel \
             bash /scripts/build-in-container.sh
 
+          # The container chowns the bind mount to the unprivileged builder
+          # user, which leaves the runner unable to create files in the
+          # workspace afterwards (mkdir release-assets: Permission denied).
+          # Take ownership back before doing anything else.
+          sudo chown -R "$(id -u):$(id -g)" "${work}"
+          ls -la "${work}/.makepkg/pkg"
+
       - name: Install verification tooling
         run: |
           # bsdtar reads .pkg.tar.zst. It is not present on the base image.
