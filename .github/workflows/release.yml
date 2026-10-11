@@ -99,16 +99,21 @@ jobs:
               chmod 0440 /etc/sudoers.d/builder
               chown -R builder:builder /work
 
-              sudo -u builder -H bash -euo pipefail -c "
-                cd /work
-                export BUILDDIR=\"\$MAKEPKG_DIR/build\"
-                export SRCDEST=\"\$MAKEPKG_DIR/src\"
-                export PKGDEST=\"\$MAKEPKG_DIR/pkg\"
-                echo \"== makepkg ==\"
-                makepkg --noconfirm --force
-                echo \"== produced ==\"
-                ls -la \"\$PKGDEST\"
-              "
+              # sudo resets the environment, so MAKEPKG_DIR from the outer shell
+              # is not visible here. Pass the paths explicitly instead of
+              # relying on inheritance, which fails under 'set -u'.
+              sudo -u builder -H \
+                MAKEPKG_DIR="$MAKEPKG_DIR" \
+                bash -euo pipefail -c '
+                  cd /work
+                  export BUILDDIR="$MAKEPKG_DIR/build"
+                  export SRCDEST="$MAKEPKG_DIR/src"
+                  export PKGDEST="$MAKEPKG_DIR/pkg"
+                  echo "== makepkg =="
+                  makepkg --noconfirm --force
+                  echo "== produced =="
+                  ls -la "$PKGDEST"
+                '
             '
 
       - name: Verify the built package
