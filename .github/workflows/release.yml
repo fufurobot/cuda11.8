@@ -126,21 +126,33 @@ jobs:
           fi
           pkgs=(.makepkg/pkg/*.pkg.tar.zst)
 
+          # _cudaroot is absolute (/opt/cuda-11.8) while archive entries are
+          # relative, so the leading slash is stripped. Match against the entry
+          # list rather than a fixed prefix: makepkg emits "opt/..." without a
+          # leading "./", whereas a hand-built archive emits "./opt/...".
           cudaroot=$(grep -m1 '^_cudaroot=' PKGBUILD | cut -d= -f2)
+          cudaroot_rel="${cudaroot#/}"
           for pkg in "${pkgs[@]}"; do
             echo "checking $(basename "$pkg")"
             # A truncated archive is the classic failure; prove it is readable.
             bsdtar -tf "$pkg" >/dev/null
             echo "  archive OK ($(bsdtar -tf "$pkg" | wc -l) entries)"
-            bsdtar -tf "$pkg" | grep -qx ".${cudaroot}/bin/nvcc" \
-              || { echo "::error::missing ${cudaroot}/bin/nvcc"; exit 1; }
+            # Normalise the listing (drop a leading "./") before matching, so
+            # the check does not depend on how the archive was produced.
+            if ! bsdtar -tf "$pkg" | sed 's|^\./||' | grep -qx "${cudaroot_rel}/bin/nvcc"; then
+              echo "::error::missing ${cudaroot}/bin/nvcc"
+              bsdtar -tf "$pkg" | grep -i 'bin/nvcc' | head -5
+              exit 1
+            fi
             echo "  contains ${cudaroot}/bin/nvcc"
 
             # Exercise the packaged compiler rather than only listing it.
-            mkdir -p /tmp/nvcc-check && cd /tmp/nvcc-check
-            bsdtar -xf "$GITHUB_WORKSPACE/$pkg" ".${cudaroot}/bin/nvcc" \
-                                              ".${cudaroot}/include" \
-                                              ".${cudaroot}/lib64" 2>/dev/null || true
+            rm -rf /tmp/nvcc-check && mkdir -p /tmp/nvcc-check && cd /tmp/nvcc-check
+            # Extraction accepts either form; try the unprefixed path first.
+            if ! bsdtar -xf "$GITHUB_WORKSPACE/$pkg" "${cudaroot_rel}/bin/nvcc" \
+                       "${cudaroot_rel}/include" "${cudaroot_rel}/lib64" 2>/dev/null; then
+              bsdtar -xf "$GITHUB_WORKSPACE/$pkg" "./${cudaroot_rel}/bin/nvcc" 2>/dev/null || true
+            fi
             cd "$GITHUB_WORKSPACE"
             echo "nvcc reports:"
             "/tmp/nvcc-check${cudaroot}/bin/nvcc" --version | grep -i release || true
