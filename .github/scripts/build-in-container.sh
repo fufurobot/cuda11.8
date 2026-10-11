@@ -30,7 +30,59 @@ exec sudo -u builder -H \
     export SRCDEST="$MAKEPKG_DIR/src"
     export PKGDEST="$MAKEPKG_DIR/pkg"
     echo "== makepkg =="
-    makepkg --noconfirm --force
+    # --nodeps: gcc10 and gcc10-libs are AUR-only packages (they provide the
+    # GCC 10 host compiler CUDA 11.8 requires). Compiling GCC from source in CI
+    # would add roughly an hour to every release, and the dependency is a
+    # runtime requirement that pacman resolves for the end user anyway. The
+    # nvcc smoke test below proves the packaged toolkit actually works.
+    makepkg --noconfirm --force --nodeps
     echo "== produced =="
     ls -la "$PKGDEST"
   '
+
+# Compile a real kernel with the freshly built nvcc. This replaces the
+# dependency check that --nodeps skipped, proving the packaged toolkit works
+# rather than merely unpacking.
+#
+# CUDA 11.8 needs an old host compiler: verified locally that GCC 10 compiles
+# cleanly while GCC 16 fails with "user-defined literal operator not found" and
+# "__malloc__ does not take arguments". gcc10 is AUR-only, so it is built here
+# and cached between runs (~40 min once, seconds thereafter).
+echo "== preparing an old host compiler for the smoke test =="
+if [ -x /work/.makepkg/gcc10/usr/bin/g++-10 ]; then
+  echo "using cached gcc10"
+else
+  echo "building gcc10 from the AUR (cached after this run)"
+  mkdir -p /work/.makepkg/gcc10
+  chown builder:builder /work/.makepkg/gcc10
+  builddir=$(mktemp -d)
+  chown builder:builder "$builddir"
+  sudo -u builder -H bash -euo pipefail -c "
+    cd $builddir
+    curl -fsSL 'https://aur.archlinux.org/cgit/aur.git/snapshot/gcc10.tar.gz' -o gcc10.tar.gz
+    tar xzf gcc10.tar.gz
+    cd gcc10
+    makepkg --noconfirm --nodeps
+  "
+  # Install into an isolated prefix rather than the container root; only the
+  # g++-10 binary is needed here and the package is not part of the release.
+  for pkg in "$builddir"/gcc10/*.pkg.tar.zst; do
+    bsdtar -xf "$pkg" -C /work/.makepkg/gcc10 usr/bin usr/lib usr/lib64 usr/include 2>/dev/null || true
+  done
+fi
+
+echo "== smoke-testing the packaged nvcc =="
+cudaroot=$(grep -m1 '^_cudaroot=' /work/PKGBUILD | cut -d= -f2)
+hostcc=/work/.makepkg/gcc10/usr/bin/g++-10
+test -x "$hostcc" || { echo "ERROR: no usable g++-10 for the smoke test"; exit 1; }
+workdir=$(mktemp -d)
+cd "$workdir"
+printf '%s\n' '__global__ void k(int *o){ *o = 118; }' \
+  'int main(){ int *d; cudaMalloc(&d,sizeof(int)); k<<<1,1>>>(d);' \
+  'int h=0; cudaMemcpy(&h,d,sizeof(int),cudaMemcpyDeviceToHost);' \
+  'cudaFree(d); return h==118?0:1; }' > smoke.cu
+"${cudaroot}/bin/nvcc" -ccbin "$hostcc" -arch=sm_75 -U_GNU_SOURCE \
+  -I"${cudaroot}/include" -L"${cudaroot}/lib64" -o smoke smoke.cu
+"${cudaroot}/bin/cuobjdump" --list-elf smoke | head -3
+echo "nvcc smoke test passed"
+

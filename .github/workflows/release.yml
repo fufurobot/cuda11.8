@@ -73,6 +73,15 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "publishing: ${tag}"
 
+      - name: Cache the GCC 10 host compiler
+        uses: actions/cache@v4
+        with:
+          # The nvcc smoke test needs an old host compiler. GCC 16 fails against
+          # CUDA 11.8, and gcc10 is AUR-only, so it is built once and cached
+          # here rather than costing ~40 minutes on every release.
+          path: .makepkg/gcc10
+          key: gcc10-10.5.0-2-${{ runner.os }}
+
       - name: Build the package in an Arch Linux container
         run: |
           # Run the whole build inside archlinux so glibc, gcc-10 and pacman match
