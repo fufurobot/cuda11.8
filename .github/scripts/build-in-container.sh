@@ -49,8 +49,8 @@ exec sudo -u builder -H \
 # "__malloc__ does not take arguments". gcc10 is AUR-only, so it is built here
 # and cached between runs (~40 min once, seconds thereafter).
 echo "== preparing an old host compiler for the smoke test =="
-if [ -x /work/.makepkg/gcc10/usr/bin/g++-10 ]; then
-  echo "using cached gcc10"
+if ls /work/.makepkg/gcc10/*.pkg.tar.zst >/dev/null 2>&1; then
+  echo "using cached gcc10 packages"
 else
   echo "building gcc10 from the AUR (cached after this run)"
   mkdir -p /work/.makepkg/gcc10
@@ -71,16 +71,21 @@ else
       13975A70E63C361C73AE69EF6EEB81F8981C74C7
     makepkg --noconfirm --nodeps
   "
-  # Install into an isolated prefix rather than the container root; only the
-  # g++-10 binary is needed here and the package is not part of the release.
-  for pkg in "$builddir"/gcc10/*.pkg.tar.zst; do
-    bsdtar -xf "$pkg" -C /work/.makepkg/gcc10 usr/bin usr/lib usr/lib64 usr/include 2>/dev/null || true
-  done
+  # Cache the packages themselves rather than an unpacked copy, so the cached
+  # artifact stays installable. The g++-10 binary is then unpacked where the
+  # smoke test can use it; the package is not part of the release.
+  cp "$builddir"/gcc10/*.pkg.tar.zst /work/.makepkg/gcc10/
 fi
 
 echo "== smoke-testing the packaged nvcc =="
 cudaroot=$(grep -m1 '^_cudaroot=' /work/PKGBUILD | cut -d= -f2)
-hostcc=/work/.makepkg/gcc10/usr/bin/g++-10
+# Unpack the cached packages into an isolated prefix; only g++-10 is needed.
+hostdir=/work/.makepkg/gcc10-unpacked
+rm -rf "$hostdir" && mkdir -p "$hostdir"
+for pkg in /work/.makepkg/gcc10/*.pkg.tar.zst; do
+  bsdtar -xf "$pkg" -C "$hostdir" usr/bin usr/lib usr/lib64 usr/include 2>/dev/null || true
+done
+hostcc="$hostdir/usr/bin/g++-10"
 test -x "$hostcc" || { echo "ERROR: no usable g++-10 for the smoke test"; exit 1; }
 workdir=$(mktemp -d)
 cd "$workdir"
