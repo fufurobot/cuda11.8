@@ -270,3 +270,38 @@ def test_gitlab_ci_builds_the_package_with_makepkg(ci: dict | None = None) -> No
     )
     assert "makepkg" in text, "the pipeline never invokes makepkg"
     assert "--noconfirm" in text, "makepkg would block on a prompt in CI"
+
+
+def test_checksums_match_the_shipped_files() -> None:
+    """Regression: editing a source without updating sha512sums breaks the build.
+
+    The .pc files, cuda.sh and cuda.conf were changed for the versioned prefix
+    but their checksums were not, so every build failed with:
+
+        ==> ERROR: One or more files did not pass the validity check!
+
+    Recomputes the digests for the files that live in this repository and
+    compares them to the PKGBUILD. The large installer is excluded because it
+    is not vendored here.
+    """
+    import hashlib
+
+    source = pkgbuild_array(PKGBUILD, "source")
+    sums = pkgbuild_array(PKGBUILD, "sha512sums")
+    assert len(sums) == len(source), "source and sha512sums lengths differ"
+
+    mismatches = []
+    for name, expected in zip(source, sums):
+        if name.startswith(("http://", "https://", "git+")):
+            continue  # External; not present in the repository.
+        path = REPO_ROOT / name
+        if not path.is_file():
+            continue
+        actual = hashlib.sha512(path.read_bytes()).hexdigest()
+        if actual != expected:
+            mismatches.append(name)
+
+    assert not mismatches, (
+        "these sources do not match their sha512sums, so makepkg will refuse "
+        f"to build: {mismatches}. Regenerate with 'makepkg -g'."
+    )
