@@ -137,11 +137,24 @@ jobs:
             # A truncated archive is the classic failure; prove it is readable.
             bsdtar -tf "$pkg" >/dev/null
             echo "  archive OK ($(bsdtar -tf "$pkg" | wc -l) entries)"
+
             # Normalise the listing (drop a leading "./") before matching, so
             # the check does not depend on how the archive was produced.
-            if ! bsdtar -tf "$pkg" | sed 's|^\./||' | grep -qx "${cudaroot_rel}/bin/nvcc"; then
+            entries=$(mktemp)
+            bsdtar -tf "$pkg" | sed 's|^\./||' > "$entries"
+
+            # Only the main package ships the toolkit. cuda11.8-tools holds
+            # nsight and nvvp, so requiring nvcc there would be wrong.
+            case "$(basename "$pkg")" in
+              cuda11.8-tools-*)
+                echo "  tools package; skipping the toolkit checks"
+                continue
+                ;;
+            esac
+
+            if ! grep -qx "${cudaroot_rel}/bin/nvcc" "$entries"; then
               echo "::error::missing ${cudaroot}/bin/nvcc"
-              bsdtar -tf "$pkg" | grep -i 'bin/nvcc' | head -5
+              grep -i 'bin/nvcc' "$entries" | head -5
               exit 1
             fi
             echo "  contains ${cudaroot}/bin/nvcc"
